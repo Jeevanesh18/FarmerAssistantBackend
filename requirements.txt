@@ -3,15 +3,15 @@ fastapi==0.110.0
 uvicorn==0.27.1
 python-multipart==0.0.9
 
-# AI & LLM (Updated versions)
+# AI & LLM 
 google-generativeai==0.7.2
 langchain>=0.2.0
 langchain-openai>=0.1.8
 langchain-core>=0.2.0
 
-# Vector Search & Data
+# Vector Search & Data (FIXED FOR NUMPY COMPATIBILITY)
+numpy==1.26.4
 faiss-cpu==1.8.0
-numpy>=1.24.0
 
 # Utilities
 requests==2.31.0
