@@ -52,16 +52,13 @@ polygon_cache: Dict[str, Dict[str, Any]] = {} # Cache for polygon data
 ACTIVE_DEMO_POLY_ID = None
 current_chat_history_for_rag = None
 
-# --- Load FAISS Index and Knowledge ---
-try:
-    with open(os.path.join(DATA_PATH, 'paddy_chunks.pkl'), 'rb') as f:
-        paddy_knowledge = pickle.load(f)
-    index = faiss.read_index(os.path.join(DATA_PATH, 'paddy_index.faiss'))
-    print(f"Successfully loaded {len(paddy_knowledge)} chunks and FAISS index from {DATA_PATH}.")
-except FileNotFoundError:
-    print(f"ERROR: FAISS index or chunks not found in {DATA_PATH}. Please ensure '{DATA_PATH}paddy_chunks.pkl' and '{DATA_PATH}paddy_index.faiss' exist.")
-except Exception as e:
-    print(f"ERROR loading FAISS index: {e}")
+def load_faiss():
+    global index, paddy_knowledge
+    if index is None:
+        with open(os.path.join(DATA_PATH, 'paddy_chunks.pkl'), 'rb') as f:
+            paddy_knowledge = pickle.load(f)
+        index = faiss.read_index(os.path.join(DATA_PATH, 'paddy_index.faiss'))
+        print("FAISS loaded")
 
 def expand_query_with_history(user_query: str, history: List[Dict[str, str]]) -> str:
     history_str = ""
@@ -92,10 +89,12 @@ def expand_query_with_history(user_query: str, history: List[Dict[str, str]]) ->
         return user_query # Fallback to original query
 
 def retrieve_paddy_context(expanded_query: str, k: int = 4) -> List[str]:
+    load_faiss()
     if not index or not paddy_knowledge:
         return ["Error: Knowledge base not loaded."]
     try:
-        query_vec = embed_model.encode([expanded_query])
+        query_vec = embed_model.embed_query(expanded_query)
+        query_vec = np.array([query_vec]).astype("float32")
         faiss.normalize_L2(query_vec)
         distances, indices = index.search(np.array(query_vec), k)
         relevant_chunks = [paddy_knowledge[i] for i in indices[0]]
