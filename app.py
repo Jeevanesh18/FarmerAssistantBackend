@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from typing import List, Union, Tuple, Dict, Any
 
 import google.generativeai as genai
-from sentence_transformers import SentenceTransformer
+from langchain_openai import OpenAIEmbeddings
 
 from langchain_openai import ChatOpenAI
 from langchain.agents import AgentExecutor, create_tool_calling_agent
@@ -44,7 +44,7 @@ genai.configure(api_key=GOOGLE_API_KEY)
 
 # --- Global Variables and Model Loading ---
 llm_rag = genai.GenerativeModel('gemini-flash-latest')
-embed_model = SentenceTransformer('all-MiniLM-L6-v2')
+embed_model = OpenAIEmbeddings(model="text-embedding-3-small")
 index = None
 paddy_knowledge = []
 polygon_cache: Dict[str, Dict[str, Any]] = {} # Cache for polygon data
