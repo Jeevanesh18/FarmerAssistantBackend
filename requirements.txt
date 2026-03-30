@@ -3,17 +3,17 @@ fastapi==0.110.0
 uvicorn==0.27.1
 python-multipart==0.0.9
 
-# AI & LLM
-google-generativeai==0.4.1
-langchain==0.1.12
-langchain-openai==0.0.8
-langchain-core==0.1.31
+# AI & LLM (Updated versions)
+google-generativeai==0.7.2
+langchain>=0.2.0
+langchain-openai>=0.1.8
+langchain-core>=0.2.0
 
-# Vector Search & Data (The most important change)
+# Vector Search & Data
 faiss-cpu==1.8.0
 numpy>=1.24.0
 
 # Utilities
 requests==2.31.0
-pydantic==2.6.3
+pydantic>=2.7.0
 pydantic-settings==2.2.1
