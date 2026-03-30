@@ -17,10 +17,14 @@ from typing import List, Union, Tuple, Dict, Any
 import google.generativeai as genai
 from sentence_transformers import SentenceTransformer
 
-from langchain.agents import AgentExecutor, create_agent
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
+from langchain.agents import AgentExecutor, create_tool_calling_agent
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage, AIMessage
+from langchain.tools import tool
+from langchain_core.tools import tool
+from pydantic import BaseModel, Field
+from typing import List, Union, Tuple
 
 # --- Configuration ---
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
@@ -44,6 +48,8 @@ embed_model = SentenceTransformer('all-MiniLM-L6-v2')
 index = None
 paddy_knowledge = []
 polygon_cache: Dict[str, Dict[str, Any]] = {} # Cache for polygon data
+ACTIVE_DEMO_POLY_ID = None
+current_chat_history_for_rag = None
 
 # --- Load FAISS Index and Knowledge ---
 try:
@@ -56,9 +62,6 @@ except FileNotFoundError:
 except Exception as e:
     print(f"ERROR loading FAISS index: {e}")
 
-# --- Helper Functions (from your Colab) ---
-
-# Query Expansion & Retrieval for RAG
 def expand_query_with_history(user_query: str, history: List[Dict[str, str]]) -> str:
     history_str = ""
     for msg in history[-6:]:
@@ -106,7 +109,7 @@ def expand_and_retrieve_context(user_input: str, chat_history: List[Dict[str, st
     return "\n\n".join(context_chunks)
 
 # Agromonitoring API Wrappers
-def create_polygon_api(url: str, payload: Dict[str, Any]) -> str | None:
+def create_polygon_api(url: str, payload: Dict[str, Any]) -> Union[str,None]:
     try:
         response = requests.post(url, json=payload)
         response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
@@ -116,7 +119,7 @@ def create_polygon_api(url: str, payload: Dict[str, Any]) -> str | None:
         print(f"Error creating polygon: {e}")
         return None
 
-def get_current_weather_api(poly_id: str) -> Dict[str, Any] | None:
+def get_current_weather_api(poly_id: str) -> Union[Dict[str, Any],None]:
     url = f"https://api.agromonitoring.com/agro/1.0/weather?polyid={poly_id}&appid={AGROMONITORING_API_KEY}"
     try:
         response = requests.get(url)
@@ -126,7 +129,7 @@ def get_current_weather_api(poly_id: str) -> Dict[str, Any] | None:
         print(f"Error getting weather: {e}")
         return None
 
-def get_soil_data_api(poly_id: str) -> Dict[str, Any] | None:
+def get_soil_data_api(poly_id: str) -> Union[Dict[str, Any],None]:
     url = f"http://api.agromonitoring.com/agro/1.0/soil?polyid={poly_id}&appid={AGROMONITORING_API_KEY}"
     try:
         response = requests.get(url)
@@ -136,20 +139,22 @@ def get_soil_data_api(poly_id: str) -> Dict[str, Any] | None:
         print(f"Error getting soil data: {e}")
         return None
 
-def get_satellite_imagery_api(poly_id: str) -> Dict[str, Any] | None:
+def get_satellite_imagery_api(poly_id: str) -> Union[Dict[str, Any],None]:
     end_time = int(time.time())
-    start_time = end_time - (30 * 24 * 60 * 60)
+    start_time = end_time - (60 * 24 * 60 * 60)
 
     url = f"http://api.agromonitoring.com/agro/1.0/image/search?start={start_time}&end={end_time}&polyid={poly_id}&appid={AGROMONITORING_API_KEY}"
+    print(url)
     try:
         response = requests.get(url)
         response.raise_for_status()
         images = response.json()
-
+        print(images)
         best_image = None
         if images:
+            print("SOOMETHIONG")
             for img in images:
-                if img.get('cl', 100) < 10: # Use get with default in case 'cl' is missing
+                if img.get('cl', 100) < 40: # Use get with default in case 'cl' is missing
                     best_image = img
                     break
             if not best_image:
@@ -168,47 +173,33 @@ def get_satellite_imagery_api(poly_id: str) -> Dict[str, Any] | None:
         print(f"Error getting satellite imagery: {e}")
         return None
 
-
-# --- LangChain Tools ---
-
-@tool
-def get_farm_data(poly_id: str) -> Dict[str, Any]:
+def get_farm_data_for_api(poly_id: str):
     """
-    Retrieves current weather, soil temperature, soil moisture, and NDVI health data for a given farm polygon ID.
-    It's crucial to provide the correct poly_id for accurate data.
+    Fetches raw data and returns it as a structured dictionary.
     """
-    if poly_id in polygon_cache and (time.time() - polygon_cache[poly_id]['timestamp']) < 300: # Cache for 5 minutes
-        print(f"Cache hit for poly_id: {poly_id}")
-        return polygon_cache[poly_id]['data']
-
+    # Call your API functions (assuming these return dicts)
     weather_data = get_current_weather_api(poly_id)
     soil_data = get_soil_data_api(poly_id)
-    satellite_data = get_satellite_imagery_api(poly_id)
+    satellite_imagery_data = get_satellite_imagery_api(poly_id)
 
-    if not weather_data and not soil_data and not satellite_data:
-        raise HTTPException(status_code=404, detail=f"No data found for polygon ID: {poly_id}")
-
-    combined_data = {
-        "weather": {
-            "temperature (Kelvin)": weather_data.get("main", {}).get("temp") if weather_data else None,
-            "humidity": weather_data.get("main", {}).get("humidity") if weather_data else None,
-            "description": weather_data.get("weather", [{}])[0].get("description") if weather_data else None
-        },
-        "soil": {
-            "t10_temp": soil_data.get("t10") if soil_data else None,
-            "moisture": soil_data.get("moisture") if soil_data else None,
-            "surface_temp (Kelvin)": soil_data.get("t0") if soil_data else None
-        },
-        "satellite": satellite_data
+    # Return as a dictionary, NOT a string
+    return {
+        "weather": weather_data,
+        "soil": soil_data,
+        "satellite": satellite_imagery_data
     }
-    
-    polygon_cache[poly_id] = {'data': combined_data, 'timestamp': time.time()}
-    return combined_data
 
-# Need to pass chat history to this tool
-# Global variable to hold chat history for the RAG tool. In a real app, this would be managed per user session.
-# For this example, we'll rely on the chat API to pass it.
-current_chat_history_for_rag: List[Dict[str, str]] = []
+@tool
+def get_farm_data():
+      """Returns the current weather, soil temperature, soil moisture, and NDVI health data for the user's farm."""
+      global ACTIVE_DEMO_POLY_ID
+      weather_data = get_current_weather_api(ACTIVE_DEMO_POLY_ID)
+      soil_data = get_soil_data_api(ACTIVE_DEMO_POLY_ID)
+      satellite_imagery_data = get_satellite_imagery_api(ACTIVE_DEMO_POLY_ID)
+      weather = json.dumps(weather_data, indent=4)
+      soil = json.dumps(soil_data, indent=4)
+      satellite_imagery = json.dumps(satellite_imagery_data, indent=4)
+      return weather+"\n"+soil+"\n"+satellite_imagery
 
 @tool
 def query_crop_manuals_with_history(query: str) -> str:
@@ -218,28 +209,12 @@ def query_crop_manuals_with_history(query: str) -> str:
     """
     global current_chat_history_for_rag
     context = expand_and_retrieve_context(query, current_chat_history_for_rag)
-    return context
+    return context      
 
-# --- LangChain Agent Setup ---
-# Define tools for the agent
 langchain_tools = [
-    tool(
-        func=lambda poly_id: get_farm_data(poly_id),
-        args_schema=tool(lambda poly_id: None).parse_json_schema(
-            {"poly_id": {"type": "string"}}
-        ),
-        name="get_farm_data",
-        description="Retrieves current weather, soil temperature, soil moisture, and NDVI health data for a given farm polygon ID. It's crucial to provide the correct poly_id for accurate data."
-    ),
-    tool(
-        func=query_crop_manuals_with_history,
-        args_schema=tool(query_crop_manuals_with_history).parse_json_schema(
-            {"query": {"type": "string"}}
-        ),
-        name="query_crop_manuals_with_history",
-        description="Queries farming manuals to give practical advice for 'how-to' questions. This tool uses the current chat history to better understand the context and provide relevant advice."
-    )
-]
+    get_farm_data,
+    query_crop_manuals_with_history, 
+]    
 
 # System prompt for the agent
 system_prompt_text = """
@@ -256,25 +231,27 @@ IMPORTANT GUIDELINES:
 - If the user's input suggests a potential plant disease or a need for visual inspection, ask them to upload a photo. DO NOT attempt to analyze the photo yourself here; you will ask the user to trigger a separate process for that.
 """
 
-# Prompt template
-prompt_template = ChatPromptTemplate.from_messages([
-    ("system", system_prompt_text),
-    MessagesPlaceholder(variable_name="chat_history"),
-    ("human", "{input}"),
-    MessagesPlaceholder(variable_name="agent_scratchpad"),
-])
-
 # LLM
 llm = ChatOpenAI(
     model="gpt-4o-mini", # Use a cost-effective model for development
     temperature=0
 )
+# Define the prompt correctly for a Tool Calling Agent
+prompt = ChatPromptTemplate.from_messages([
+    ("system", system_prompt_text), # Your system prompt text
+    MessagesPlaceholder(variable_name="chat_history"),
+    ("human", "{input}"),
+    MessagesPlaceholder(variable_name="agent_scratchpad"),
+])
+# 1. Create the Agent (this is the "brain" that makes decisions)
+agent = create_tool_calling_agent(llm, langchain_tools, prompt)
 
-# Agent Executor
-agent_executor = create_agent(
-    llm,
-    langchain_tools,
-    prompt_template
+# 2. Create the AgentExecutor (this is the "engine" that actually calls the tools)
+agent_executor = AgentExecutor(
+    agent=agent, 
+    tools=langchain_tools, 
+    verbose=True, 
+    handle_parsing_errors=True
 )
 
 # --- FastAPI App ---
@@ -288,8 +265,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# --- API Endpoints ---
 
 @app.post("/api/v1/farm/polygon", response_model=Dict[str, str])
 async def create_farm_polygon(request: Dict[str, Any]):
@@ -308,6 +283,7 @@ async def create_farm_polygon(request: Dict[str, Any]):
             }
         }
     }
+
     poly_id = create_polygon_api(f"https://api.agromonitoring.com/agro/1.0/polygons?appid={AGROMONITORING_API_KEY}", payload)
     if poly_id:
         return {"status": "success", "poly_id": poly_id}
@@ -320,7 +296,7 @@ async def get_farm_data_endpoint(poly_id: str):
     API to get satellite, weather, and soil data for a given polygon ID.
     """
     try:
-        data = get_farm_data(poly_id)
+        data = get_farm_data_for_api(poly_id)
         if data is None or (not any(data.values())): # Check if all values are None/empty
              raise HTTPException(status_code=404, detail=f"No data found for polygon ID: {poly_id}")
         
@@ -330,11 +306,7 @@ async def get_farm_data_endpoint(poly_id: str):
             "soil": data.get("soil", {}),
             "satellite": data.get("satellite", {})
         }
-        
-        # Add NDVI score if available
-        if response_data["satellite"] and response_data["satellite"].get("ndvi_score") is not None:
-             response_data["satellite"]["ndvi"] = response_data["satellite"]["ndvi_score"] # Map to your desired key name
-        
+       
         return response_data
 
     except HTTPException as e:
@@ -342,6 +314,7 @@ async def get_farm_data_endpoint(poly_id: str):
     except Exception as e:
         print(f"Error in /api/v1/farm/data: {e}")
         raise HTTPException(status_code=500, detail=f"An internal error occurred while fetching farm data: {e}")
+
 
 @app.post("/api/v1/chat", response_model=Dict[str, Any])
 async def chat_endpoint(request: Dict[str, Any]):
@@ -359,7 +332,8 @@ async def chat_endpoint(request: Dict[str, Any]):
     # Set the global chat history for the RAG tool
     global current_chat_history_for_rag
     current_chat_history_for_rag = chat_history
-
+    global ACTIVE_DEMO_POLY_ID
+    ACTIVE_DEMO_POLY_ID=poly_id
     # Prepare messages for the agent executor
     messages = []
     for msg in chat_history:
@@ -393,20 +367,13 @@ async def chat_endpoint(request: Dict[str, Any]):
         
         # We need to ensure the agent knows the poly_id for get_farm_data.
         # Let's modify the user's input to include the poly_id context for the agent.
-        contextual_user_message = f"Farm ID: {poly_id}\nUser Message: {user_message}"
 
         response = agent_executor.invoke({
-            "messages": messages,
-            "input": contextual_user_message # Use the contextual message for the agent
+            "input": user_message,
+            "chat_history": messages
         })
 
-        assistant_reply = response["messages"][-1].content
-
-        # Clean up global chat history for the RAG tool.
-        # In a real app, chat history would be managed per user session.
-        current_chat_history_for_rag = [] 
-
-        return {"reply": assistant_reply}
+        return {"reply": response["output"]}
 
     except Exception as e:
         print(f"Error during chat interaction: {e}")
@@ -414,6 +381,7 @@ async def chat_endpoint(request: Dict[str, Any]):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"An internal error occurred during chat: {e}")
+
 
 @app.post("/api/v1/vision/predict", response_model=Dict[str, Any])
 async def predict_disease_from_image(file: UploadFile = File(...)):
@@ -442,13 +410,3 @@ async def predict_disease_from_image(file: UploadFile = File(...)):
         print(f"Error processing uploaded file: {e}")
         raise HTTPException(status_code=500, detail=f"An internal error occurred while processing the image: {e}")
 
-
-# --- Main Execution ---
-if __name__ == "__main__":
-    import uvicorn
-    print("Starting FastAPI server...")
-    print(f"Agromonitoring API Key set: {AGROMONITORING_API_KEY is not None}")
-    print(f"Google API Key set: {GOOGLE_API_KEY is not None}")
-    print(f"OpenAI API Key set: {OPENAI_API_KEY is not None}")
-    print(f"Data path for FAISS: {os.path.abspath(DATA_PATH)}")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
